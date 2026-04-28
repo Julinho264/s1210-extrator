@@ -28,12 +28,14 @@ import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 
-// IO / NIO / util
+// IO / NIO / util / ZIP
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class S1210Extrator extends JFrame {
 
@@ -521,21 +523,62 @@ public class S1210Extrator extends JFrame {
     // Processamento principal
     // =========================================================================
     private void processar(String pastaCaminho, String saidaCaminho) throws Exception {
-        List<Path> xmls;
+
+        // ── Coleta arquivos da pasta ──────────────────────────────────────────
+        List<Path> todosArquivos;
         try (var stream = Files.walk(Paths.get(pastaCaminho))) {
-            xmls = stream
-                .filter(p -> p.toString().toLowerCase().endsWith(".xml"))
+            todosArquivos = stream
+                .filter(Files::isRegularFile)
                 .sorted()
                 .collect(Collectors.toList());
         }
 
-        log("Encontrados " + xmls.size() + " arquivo(s) XML na pasta.");
+        List<Path> xmlDiretos = todosArquivos.stream()
+            .filter(p -> p.toString().toLowerCase().endsWith(".xml"))
+            .collect(Collectors.toList());
+        List<Path> zips = todosArquivos.stream()
+            .filter(p -> p.toString().toLowerCase().endsWith(".zip"))
+            .collect(Collectors.toList());
+
+        // ── Mapa nome→bytes (chave em maiúsculas para deduplicação) ──────────
+        // Arquivos diretos têm prioridade; XMLs de ZIP são ignorados se o nome
+        // já estiver presente como arquivo direto.
+        Map<String, byte[]> fontes = new LinkedHashMap<>();
+
+        for (Path xml : xmlDiretos) {
+            fontes.put(xml.getFileName().toString().toUpperCase(), Files.readAllBytes(xml));
+        }
+
+        int xmlsDeZip = 0;
+        for (Path zip : zips) {
+            try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    if (!entry.isDirectory()) {
+                        String nome = Paths.get(entry.getName()).getFileName().toString();
+                        if (nome.toLowerCase().endsWith(".xml")
+                                && !fontes.containsKey(nome.toUpperCase())) {
+                            fontes.put(nome.toUpperCase(), zis.readAllBytes());
+                            xmlsDeZip++;
+                        }
+                    }
+                    zis.closeEntry();
+                }
+            } catch (Exception ex) {
+                log("⚠  ZIP " + zip.getFileName() + ": " + ex.getMessage());
+            }
+        }
+
+        log("XMLs diretos: " + xmlDiretos.size()
+            + " | ZIPs: " + zips.size()
+            + " | XMLs extraídos de ZIPs: " + xmlsDeZip
+            + " | Total único: " + fontes.size());
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
-        int total = xmls.size();
+        int total = fontes.size();
         int contador = 0, s1210Encontrados = 0;
 
-        for (Path xml : xmls) {
+        for (Map.Entry<String, byte[]> fonte : fontes.entrySet()) {
             contador++;
             final int pct = (int)(contador * 100.0 / total);
             SwingUtilities.invokeLater(() -> {
@@ -543,12 +586,12 @@ public class S1210Extrator extends JFrame {
                 progressBar.setString(pct + "%");
             });
 
+            String nomeExibicao = fonte.getKey();
             try {
-                List<Registro> registros = parsearArquivo(xml);
+                List<Registro> registros = parsearArquivo(nomeExibicao, fonte.getValue());
                 if (!registros.isEmpty()) {
                     s1210Encontrados++;
                     for (Registro r : registros) {
-                        // Agrupa por CPF + perApur + nrRecibo — cada recibo é uma linha distinta
                         String recibo = (r.nrRecibo != null && !r.nrRecibo.isBlank()) ? r.nrRecibo : "";
                         String chave  = r.cpf + "|" + r.perApur + "|" + recibo;
                         Registro ex = mapa.get(chave);
@@ -560,10 +603,10 @@ public class S1210Extrator extends JFrame {
                         }
                     }
                     long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
-                    log("✔  " + xml.getFileName() + " — " + nBenef + " beneficiário(s)");
+                    log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
                 }
             } catch (Exception ex) {
-                log("⚠  " + xml.getFileName() + ": " + ex.getMessage());
+                log("⚠  " + nomeExibicao + ": " + ex.getMessage());
             }
         }
 
@@ -623,17 +666,10 @@ public class S1210Extrator extends JFrame {
     }
 
     // =========================================================================
-    // Parse de um arquivo XML
+    // Parse de um arquivo XML (nome em maiúsculas, bytes já lidos)
     // =========================================================================
-    private List<Registro> parsearArquivo(Path arquivo) throws Exception {
-        String nomeUpper = arquivo.getFileName().toString().toUpperCase();
-
-        // Busca ".S-1210." no nome do arquivo para identificar exatamente o evento S-1210.
-        // Usar apenas "1210" seria perigoso: arquivos como "...13212100001.S-1207.xml"
-        // também contêm "1210" como substring do ID e seriam parseados incorretamente.
+    private List<Registro> parsearArquivo(String nomeUpper, byte[] bytes) throws Exception {
         boolean ehS1210porNome = nomeUpper.contains(".S-1210.");
-
-        byte[] bytes = Files.readAllBytes(arquivo);
 
         if (!ehS1210porNome) {
             String trecho = new String(bytes, 0, Math.min(bytes.length, 4096), "UTF-8");
