@@ -34,8 +34,9 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.Enumeration;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 public class S1210Extrator extends JFrame {
 
@@ -553,22 +554,24 @@ public class S1210Extrator extends JFrame {
         for (Path zip : zips) {
             log("📦  Abrindo: " + zip.getFileName());
             int novosNesteZip = 0, duplicadosNesteZip = 0;
-            try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
-                ZipEntry entry;
-                while ((entry = zis.getNextEntry()) != null) {
+            try (ZipFile zf = new ZipFile(zip.toFile())) {
+                Enumeration<? extends ZipEntry> entries = zf.entries();
+                while (entries.hasMoreElements()) {
+                    ZipEntry entry = entries.nextElement();
                     if (!entry.isDirectory()) {
                         String nome = Paths.get(entry.getName()).getFileName().toString();
                         if (nome.toLowerCase().endsWith(".xml")) {
                             if (!fontes.containsKey(nome.toUpperCase())) {
-                                fontes.put(nome.toUpperCase(), zis.readAllBytes());
-                                novosNesteZip++;
-                                xmlsDeZip++;
+                                try (InputStream is = zf.getInputStream(entry)) {
+                                    fontes.put(nome.toUpperCase(), is.readAllBytes());
+                                    novosNesteZip++;
+                                    xmlsDeZip++;
+                                }
                             } else {
                                 duplicadosNesteZip++;
                             }
                         }
                     }
-                    zis.closeEntry();
                 }
                 log("    └─ " + novosNesteZip + " XML(s) adicionado(s)"
                     + (duplicadosNesteZip > 0 ? ", " + duplicadosNesteZip + " duplicado(s) ignorado(s)" : ""));
