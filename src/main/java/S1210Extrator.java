@@ -606,6 +606,10 @@ public class S1210Extrator extends JFrame {
                         if (ex == null) {
                             mapa.put(chave, r);
                         } else {
+                            log("⚠  Fusão de linha — CPF " + r.cpf
+                                + " | perApur " + r.perApur
+                                + " | nrRecibo " + (r.nrRecibo != null ? r.nrRecibo : "(vazio)")
+                                + " — arquivo: " + nomeExibicao);
                             r.idmDevs.forEach(ex::adicionarDmDev);
                             r.perRefs.forEach(ex::adicionarPerRef);
                         }
