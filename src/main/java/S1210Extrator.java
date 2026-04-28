@@ -551,28 +551,37 @@ public class S1210Extrator extends JFrame {
 
         int xmlsDeZip = 0;
         for (Path zip : zips) {
+            log("📦  Abrindo: " + zip.getFileName());
+            int novosNesteZip = 0, duplicadosNesteZip = 0;
             try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip))) {
                 ZipEntry entry;
                 while ((entry = zis.getNextEntry()) != null) {
                     if (!entry.isDirectory()) {
                         String nome = Paths.get(entry.getName()).getFileName().toString();
-                        if (nome.toLowerCase().endsWith(".xml")
-                                && !fontes.containsKey(nome.toUpperCase())) {
-                            fontes.put(nome.toUpperCase(), zis.readAllBytes());
-                            xmlsDeZip++;
+                        if (nome.toLowerCase().endsWith(".xml")) {
+                            if (!fontes.containsKey(nome.toUpperCase())) {
+                                fontes.put(nome.toUpperCase(), zis.readAllBytes());
+                                novosNesteZip++;
+                                xmlsDeZip++;
+                            } else {
+                                duplicadosNesteZip++;
+                            }
                         }
                     }
                     zis.closeEntry();
                 }
+                log("    └─ " + novosNesteZip + " XML(s) adicionado(s)"
+                    + (duplicadosNesteZip > 0 ? ", " + duplicadosNesteZip + " duplicado(s) ignorado(s)" : ""));
             } catch (Exception ex) {
                 log("⚠  ZIP " + zip.getFileName() + ": " + ex.getMessage());
             }
         }
 
-        log("XMLs diretos: " + xmlDiretos.size()
-            + " | ZIPs: " + zips.size()
-            + " | XMLs extraídos de ZIPs: " + xmlsDeZip
-            + " | Total único: " + fontes.size());
+        log("─────────────────────────────────────");
+        log("XMLs diretos  : " + xmlDiretos.size());
+        log("ZIPs lidos    : " + zips.size() + " (" + xmlsDeZip + " XMLs novos extraídos)");
+        log("Total a processar: " + fontes.size());
+        log("─────────────────────────────────────");
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
         int total = fontes.size();
