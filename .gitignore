@@ -3,3 +3,4 @@ target/
 hs_err_*.log
 .idea/
 *.iml
+dist/
