@@ -580,11 +580,7 @@ public class S1210Extrator extends JFrame {
             }
         }
 
-        log("─────────────────────────────────────");
-        log("XMLs diretos  : " + xmlDiretos.size());
-        log("ZIPs lidos    : " + zips.size() + " (" + xmlsDeZip + " XMLs novos extraídos)");
-        log("Total a processar: " + fontes.size());
-        log("─────────────────────────────────────");
+        log("Total a processar: " + fontes.size() + " XML(s) únicos");
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
         int total = fontes.size();
@@ -629,11 +625,12 @@ public class S1210Extrator extends JFrame {
         }
 
         log("─────────────────────────────────────");
-        log("Arquivos S-1210 encontrados : " + s1210Encontrados);
-        if (filtrarDiverg) {
-            log("Modo: apenas divergências");
-        }
-        log("Linhas na planilha (CPF+período): " + mapa.size());
+        log("XMLs diretos       : " + xmlDiretos.size());
+        log("ZIPs encontrados   : " + zips.size());
+        log("XMLs extraídos ZIP : " + xmlsDeZip);
+        log("S-1210 encontrados : " + s1210Encontrados);
+        if (filtrarDiverg) log("Modo               : apenas divergências");
+        log("Linhas na planilha : " + mapa.size());
 
         if (s1210Encontrados == 0) {
             SwingUtilities.invokeLater(() -> {
