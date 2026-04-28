@@ -443,28 +443,71 @@ public class S1210Extrator extends JFrame {
         return dst;
     }
 
-    // ── Seleção de caminhos ───────────────────────────────────────────────────
+    // ── Seleção de caminhos (diálogos nativos do Windows) ────────────────────
     private void selecionarPasta(ActionEvent e) {
-        JFileChooser fc = new JFileChooser(System.getProperty("user.home"));
-        fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        fc.setDialogTitle("Selecionar pasta com XMLs S-1210");
-        if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File pasta = fc.getSelectedFile();
-            txtPasta.setText(pasta.getAbsolutePath());
-            if (txtSaida.getText().isBlank())
-                txtSaida.setText(new File(pasta, "s1210_resultado.xlsx").getAbsolutePath());
-        }
+        btnSelecionarPasta.setEnabled(false);
+        new Thread(() -> {
+            String caminho = dialogoPastaNativo();
+            SwingUtilities.invokeLater(() -> {
+                btnSelecionarPasta.setEnabled(true);
+                if (caminho != null) {
+                    txtPasta.setText(caminho);
+                    if (txtSaida.getText().isBlank())
+                        txtSaida.setText(new File(caminho, "s1210_resultado.xlsx").getAbsolutePath());
+                }
+            });
+        }).start();
     }
 
     private void selecionarSaida(ActionEvent e) {
-        JFileChooser fc = new JFileChooser(System.getProperty("user.home"));
-        fc.setDialogTitle("Salvar planilha como...");
-        fc.setSelectedFile(new File("s1210_resultado.xlsx"));
-        if (fc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            String caminho = fc.getSelectedFile().getAbsolutePath();
-            if (!caminho.toLowerCase().endsWith(".xlsx")) caminho += ".xlsx";
-            txtSaida.setText(caminho);
-        }
+        btnSelecionarSaida.setEnabled(false);
+        new Thread(() -> {
+            String caminho = dialogoSalvarNativo();
+            SwingUtilities.invokeLater(() -> {
+                btnSelecionarSaida.setEnabled(true);
+                if (caminho != null) txtSaida.setText(caminho);
+            });
+        }).start();
+    }
+
+    private String dialogoPastaNativo() {
+        try {
+            String script =
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+                "Add-Type -AssemblyName System.Windows.Forms; " +
+                "$d = New-Object System.Windows.Forms.OpenFileDialog; " +
+                "$d.Title = 'Selecionar pasta com arquivos XML / ZIP do eSocial'; " +
+                "$d.ValidateNames = $false; " +
+                "$d.CheckFileExists = $false; " +
+                "$d.CheckPathExists = $true; " +
+                "$d.FileName = 'Selecionar pasta'; " +
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output ([System.IO.Path]::GetDirectoryName($d.FileName)) }";
+            Process proc = new ProcessBuilder("powershell.exe", "-NonInteractive", "-Command", script)
+                .redirectErrorStream(true).start();
+            String out = new String(proc.getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8).trim();
+            proc.waitFor();
+            return out.isBlank() ? null : out;
+        } catch (Exception ex) { return null; }
+    }
+
+    private String dialogoSalvarNativo() {
+        try {
+            String script =
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+                "Add-Type -AssemblyName System.Windows.Forms; " +
+                "$d = New-Object System.Windows.Forms.SaveFileDialog; " +
+                "$d.Title = 'Salvar planilha como...'; " +
+                "$d.Filter = 'Planilha Excel (*.xlsx)|*.xlsx'; " +
+                "$d.FileName = 's1210_resultado.xlsx'; " +
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName }";
+            Process proc = new ProcessBuilder("powershell.exe", "-NonInteractive", "-Command", script)
+                .redirectErrorStream(true).start();
+            String out = new String(proc.getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8).trim();
+            proc.waitFor();
+            return out.isBlank() ? null : out;
+        } catch (Exception ex) { return null; }
     }
 
     // ── Início do processamento (thread separada) ─────────────────────────────
