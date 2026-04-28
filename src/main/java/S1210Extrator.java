@@ -31,6 +31,7 @@ import java.awt.event.MouseEvent;
 // IO / NIO / util / ZIP
 import java.io.*;
 import java.nio.file.*;
+import java.util.Properties;
 import java.util.*;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -80,9 +81,21 @@ public class S1210Extrator extends JFrame {
     private JLabel      lblStatus;
     private JCheckBox   chkDivergencias;
 
+    // ── Versão (injetada pelo Maven via app.properties) ───────────────────────
+    static final String VERSAO = lerVersao();
+
+    private static String lerVersao() {
+        try (InputStream is = S1210Extrator.class.getResourceAsStream("/app.properties")) {
+            if (is == null) return "?.?";
+            Properties props = new Properties();
+            props.load(is);
+            return props.getProperty("version", "?.?");
+        } catch (Exception e) { return "?.?"; }
+    }
+
     // =========================================================================
     public S1210Extrator() {
-        super("SIGEP — Extrator S-1210");
+        super("SIGEP — Extrator S-1210  v" + VERSAO);
         initUI();
     }
 
@@ -274,7 +287,7 @@ public class S1210Extrator extends JFrame {
         actionRow.add(progressBar, BorderLayout.CENTER);
         actionRow.add(btnGerar,    BorderLayout.EAST);
 
-        lblStatus = new JLabel("© SIGEP — Sistema Integrado de Gestão Pública");
+        lblStatus = new JLabel("© SIGEP — Sistema Integrado de Gestão Pública  |  v" + VERSAO);
         lblStatus.setFont(FIGTREE_REGULAR.deriveFont(10f));
         lblStatus.setForeground(GRAY_TEXT);
 
