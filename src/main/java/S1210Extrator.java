@@ -636,14 +636,17 @@ public class S1210Extrator extends JFrame {
 
     // =========================================================================
     // Estrutura de dados: CPF + perApur → [ideDmDev], [perRef], nrRecibo
-    //   perApur  — de <ideEvento><perApur>, único por arquivo
-    //   perRef   — de cada <infoPgto><perRef>, sem repetição por beneficiário
-    //   nrRecibo — de <retornoEvento><recibo><nrRecibo>
+    //   perApur         — de <ideEvento><perApur>, único por arquivo
+    //   perRef          — de cada <infoPgto><perRef>, sem repetição por beneficiário
+    //   nrRecibo        — de <retornoEvento><recibo><nrRecibo>
+    //   dhProcessamento — de <retornoEvento><dhProcessamento>; desempata registros
+    //                     com mesmo CPF+perApur (prevalece o mais recente)
     // =========================================================================
     private static class Registro {
         String cpf;
         String perApur;
         String nrRecibo;
+        String dhProcessamento = ""; // ISO-8601; string-compare é suficiente
         LinkedHashSet<String> idmDevs   = new LinkedHashSet<>();
         LinkedHashSet<String> perRefs   = new LinkedHashSet<>();
         LinkedHashSet<String> origens   = new LinkedHashSet<>(); // arquivos fonte
@@ -826,25 +829,47 @@ public class S1210Extrator extends JFrame {
         });
     }
 
-    /** Funde uma lista de Registros no mapa global, logando fusões. */
+    /**
+     * Insere/substitui registros no mapa global.
+     * Chave: CPF|perApur — se já existir entrada para o mesmo CPF+perApur,
+     * prevalece o registro com dhProcessamento mais recente (comparação lexicográfica
+     * em ISO-8601 é equivalente à cronológica). Ambos os arquivos ficam registrados
+     * na coluna "Arquivo Origem" para rastreabilidade.
+     */
     private void fundirNoMapa(List<Registro> registros, Map<String, Registro> mapa, String nomeExibicao) {
         long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
         log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
         for (Registro r : registros) {
             r.adicionarOrigem(nomeExibicao);
-            String recibo = (r.nrRecibo != null && !r.nrRecibo.isBlank()) ? r.nrRecibo : "";
-            String chave  = r.cpf + "|" + r.perApur + "|" + recibo;
-            Registro ex   = mapa.get(chave);
+            String chave = r.cpf + "|" + r.perApur;
+            Registro ex  = mapa.get(chave);
             if (ex == null) {
                 mapa.put(chave, r);
             } else {
-                log("⚠  Fusão de linha — CPF " + r.cpf
-                    + " | perApur " + r.perApur
-                    + " | nrRecibo " + (r.nrRecibo != null ? r.nrRecibo : "(vazio)")
-                    + " — arquivo: " + nomeExibicao);
-                r.idmDevs.forEach(ex::adicionarDmDev);
-                r.perRefs.forEach(ex::adicionarPerRef);
-                r.origens.forEach(ex::adicionarOrigem);
+                // Mesmo CPF+perApur: decide pelo dhProcessamento mais recente
+                boolean novoEhMaisRecente =
+                    r.dhProcessamento.compareTo(ex.dhProcessamento) > 0;
+
+                if (novoEhMaisRecente) {
+                    // Novo prevalece — preserva origens do antigo para rastreabilidade
+                    ex.origens.forEach(r::adicionarOrigem);
+                    log("🔄 Substituição — CPF " + r.cpf
+                        + " | perApur " + r.perApur
+                        + " | novo: " + r.dhProcessamento
+                            + " (" + nomeExibicao + ")"
+                        + " | substituiu: " + ex.dhProcessamento
+                            + " (" + ex.origensStr() + ")");
+                    mapa.put(chave, r);
+                } else {
+                    // Existente prevalece — registra origem do descartado
+                    r.origens.forEach(ex::adicionarOrigem);
+                    log("🔄 Descartado — CPF " + r.cpf
+                        + " | perApur " + r.perApur
+                        + " | descartado: " + r.dhProcessamento
+                            + " (" + nomeExibicao + ")"
+                        + " | prevalece: " + ex.dhProcessamento
+                            + " (" + ex.origensStr() + ")");
+                }
             }
         }
     }
@@ -881,7 +906,9 @@ public class S1210Extrator extends JFrame {
         String perApur = primeiroTexto(doc, "perApur");
         if (perApur == null || perApur.isBlank()) perApur = "(sem perApur)";
 
-        String nrRecibo = primeiroTexto(doc, "nrRecibo");
+        String nrRecibo        = primeiroTexto(doc, "nrRecibo");
+        String dhProcessamento = primeiroTexto(doc, "dhProcessamento");
+        if (dhProcessamento == null) dhProcessamento = "";
 
         NodeList benefs = doc.getElementsByTagName("ideBenef");
         if (benefs.getLength() == 0)
@@ -900,9 +927,10 @@ public class S1210Extrator extends JFrame {
                 .findFirst().orElse(null);
             if (reg == null) {
                 reg = new Registro();
-                reg.cpf      = cpf;
-                reg.perApur  = perApur;
-                reg.nrRecibo = nrRecibo;
+                reg.cpf            = cpf;
+                reg.perApur        = perApur;
+                reg.nrRecibo       = nrRecibo;
+                reg.dhProcessamento = dhProcessamento;
                 resultado.add(reg);
             }
 
