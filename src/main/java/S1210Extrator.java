@@ -644,8 +644,9 @@ public class S1210Extrator extends JFrame {
         String cpf;
         String perApur;
         String nrRecibo;
-        LinkedHashSet<String> idmDevs  = new LinkedHashSet<>();
-        LinkedHashSet<String> perRefs  = new LinkedHashSet<>();
+        LinkedHashSet<String> idmDevs   = new LinkedHashSet<>();
+        LinkedHashSet<String> perRefs   = new LinkedHashSet<>();
+        LinkedHashSet<String> origens   = new LinkedHashSet<>(); // arquivos fonte
 
         void adicionarDmDev(String v) {
             if (v != null && !v.isBlank()) idmDevs.add(v.trim());
@@ -655,8 +656,13 @@ public class S1210Extrator extends JFrame {
             if (v != null && !v.isBlank()) perRefs.add(v.trim());
         }
 
-        String idmDevsStr()  { return String.join("; ", idmDevs); }
-        String perRefsStr()  { return String.join("; ", perRefs); }
+        void adicionarOrigem(String v) {
+            if (v != null && !v.isBlank()) origens.add(v.trim());
+        }
+
+        String idmDevsStr()   { return String.join("; ", idmDevs); }
+        String perRefsStr()   { return String.join("; ", perRefs); }
+        String origensStr()   { return String.join("; ", origens); }
     }
 
     // =========================================================================
@@ -825,6 +831,7 @@ public class S1210Extrator extends JFrame {
         long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
         log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
         for (Registro r : registros) {
+            r.adicionarOrigem(nomeExibicao);
             String recibo = (r.nrRecibo != null && !r.nrRecibo.isBlank()) ? r.nrRecibo : "";
             String chave  = r.cpf + "|" + r.perApur + "|" + recibo;
             Registro ex   = mapa.get(chave);
@@ -837,6 +844,7 @@ public class S1210Extrator extends JFrame {
                     + " — arquivo: " + nomeExibicao);
                 r.idmDevs.forEach(ex::adicionarDmDev);
                 r.perRefs.forEach(ex::adicionarPerRef);
+                r.origens.forEach(ex::adicionarOrigem);
             }
         }
     }
@@ -957,7 +965,7 @@ public class S1210Extrator extends JFrame {
 
             CellStyle estImpar = wb.createCellStyle();
 
-            String[] cols = {"CPF", "ideDmDev", "Período de Apuração", "Período de Referência", "Número Recibo"};
+            String[] cols = {"CPF", "ideDmDev", "Período de Apuração", "Período de Referência", "Número Recibo", "Arquivo Origem"};
             Row header = aba.createRow(0);
             header.setHeightInPoints(22);
             for (int c = 0; c < cols.length; c++) {
@@ -976,7 +984,8 @@ public class S1210Extrator extends JFrame {
                     r.idmDevsStr(),
                     r.perApur,
                     r.perRefsStr(),
-                    r.nrRecibo != null ? r.nrRecibo : ""
+                    r.nrRecibo != null ? r.nrRecibo : "",
+                    r.origensStr()
                 };
                 for (int c = 0; c < vals.length; c++) {
                     Cell cell = row.createCell(c);
@@ -986,7 +995,7 @@ public class S1210Extrator extends JFrame {
                 linha++;
             }
 
-            int[] larguras = {4500, 14000, 5000, 5500, 8000};
+            int[] larguras = {4500, 14000, 5000, 5500, 8000, 16000};
             for (int c = 0; c < larguras.length; c++) aba.setColumnWidth(c, larguras[c]);
 
             try (FileOutputStream fos = new FileOutputStream(caminho)) { wb.write(fos); }
