@@ -620,10 +620,14 @@ public class S1210Extrator extends JFrame {
         new Thread(() -> {
             try {
                 processar(pasta, saida);
-            } catch (Exception ex) {
-                log("ERRO: " + ex.getMessage());
+            } catch (Throwable ex) {
+                // Captura também OutOfMemoryError / StackOverflowError
+                String msg = ex.getClass().getSimpleName() + ": " + ex.getMessage();
+                log("ERRO FATAL: " + msg);
+                gravarLogErro(ex);
                 SwingUtilities.invokeLater(() ->
-                    dlgErro("Erro", "Erro durante o processamento:\n" + ex.getMessage()));
+                    dlgErro("Erro", "Erro durante o processamento:\n" + msg +
+                        "\n\nDetalhes gravados em s1210_erro.log"));
             } finally {
                 SwingUtilities.invokeLater(() -> btnGerar.setEnabled(true));
             }
@@ -704,11 +708,9 @@ public class S1210Extrator extends JFrame {
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
 
-        // DocumentBuilder reutilizado — não acumula DOM entre arquivos
+        // Factory compartilhada; DocumentBuilder criado por arquivo (Xerces não é seguro para reuso após exceção)
         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
         dbf.setNamespaceAware(false);
-        DocumentBuilder db = dbf.newDocumentBuilder();
-        db.setErrorHandler(null);
 
         // ── XMLs diretos: lê e processa um por vez (bytes liberados pelo GC logo após) ──
         for (Path xml : xmlDiretos) {
@@ -716,10 +718,10 @@ public class S1210Extrator extends JFrame {
             atualizarProgresso(cnt[0], total);
             String nome = xml.getFileName().toString().toUpperCase();
             try (InputStream is = Files.newInputStream(xml)) {
-                List<Registro> regs = parsearStream(nome, is, db);
+                List<Registro> regs = parsearStream(nome, is, dbf);
                 if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
-            } catch (Exception ex) {
-                log("⚠  " + nome + ": " + ex.getMessage());
+            } catch (Throwable ex) {
+                log("⚠  " + nome + ": " + ex.getClass().getSimpleName() + " — " + ex.getMessage());
             }
         }
 
@@ -739,10 +741,10 @@ public class S1210Extrator extends JFrame {
                                 cnt[0]++;
                                 atualizarProgresso(cnt[0], total);
                                 try (InputStream is = zf.getInputStream(entry)) {
-                                    List<Registro> regs = parsearStream(nome, is, db);
+                                    List<Registro> regs = parsearStream(nome, is, dbf);
                                     if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
-                                } catch (Exception ex) {
-                                    log("⚠  " + nome + ": " + ex.getMessage());
+                                } catch (Throwable ex) {
+                                    log("⚠  " + nome + ": " + ex.getClass().getSimpleName() + " — " + ex.getMessage());
                                 }
                                 novos++; xmlsDeZip++;
                             } else {
@@ -843,7 +845,7 @@ public class S1210Extrator extends JFrame {
     // Parse de um arquivo XML a partir de InputStream (sem carregar bytes inteiros)
     // =========================================================================
     private List<Registro> parsearStream(String nomeUpper, InputStream rawIs,
-                                         DocumentBuilder db) throws Exception {
+                                         DocumentBuilderFactory dbf) throws Exception {
         boolean ehS1210porNome = nomeUpper.contains(".S-1210.");
 
         // BufferedInputStream com buffer de 64 KB; mark/reset para detectar tipo sem reler
@@ -862,6 +864,9 @@ public class S1210Extrator extends JFrame {
             bis.reset();
         }
 
+        // Novo DocumentBuilder por arquivo — garante estado limpo mesmo após XML malformado anterior
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        db.setErrorHandler(null);
         Document doc = db.parse(bis);
         doc.getDocumentElement().normalize();
 
@@ -1016,8 +1021,28 @@ public class S1210Extrator extends JFrame {
         });
     }
 
+    /** Grava stack trace completo em s1210_erro.log para diagnóstico. */
+    private static void gravarLogErro(Throwable ex) {
+        try {
+            java.io.File f = new java.io.File(
+                System.getProperty("user.home"), "s1210_erro.log");
+            try (java.io.PrintWriter pw = new java.io.PrintWriter(
+                    new java.io.FileWriter(f, true))) {
+                pw.println("=== " + new java.util.Date() + " ===");
+                ex.printStackTrace(pw);
+                pw.println();
+            }
+        } catch (Exception ignored) {}
+    }
+
     // =========================================================================
     public static void main(String[] args) {
+        // Handler global — garante que qualquer crash inesperado grava log
+        Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
+            gravarLogErro(ex);
+            ex.printStackTrace();
+        });
+
         try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); }
         catch (Exception ignored) {}
         SwingUtilities.invokeLater(() -> new S1210Extrator().setVisible(true));
