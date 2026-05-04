@@ -32,7 +32,7 @@ echo Gerando app-image...
   --app-version %VERSAO% ^
   --dest "%DEST%" ^
   --icon src\main\resources\icon.ico ^
-  --java-options "-Xmx512m"
+  --java-options "-Xmx512m -Xms64m -XX:+UseSerialGC"
 
 if %ERRORLEVEL% neq 0 (
     echo ERRO ao gerar app-image.

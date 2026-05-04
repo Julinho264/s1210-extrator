@@ -10,4 +10,4 @@ if not defined JAR (
     exit /b 1
 )
 
-start "" "%JAVA_HOME%\bin\javaw" -jar "%JAR%"
+start "" "%JAVA_HOME%\bin\javaw" -Xmx512m -Xms64m -XX:+UseSerialGC -jar "%JAR%"
