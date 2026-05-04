@@ -50,6 +50,9 @@ if exist "%WARP%" (
     if %ERRORLEVEL% neq 0 (
         echo AVISO: Falha ao gerar .exe unico.
     ) else (
+        rem Corrige subsistema PE: console (3) -> GUI (2) — elimina janela CMD ao iniciar
+        set "EXE_FINAL=%DEST%\SIGEP_S1210_Extrator_v%VERSAO%.exe"
+        powershell -NonInteractive -Command "$p='%EXE_FINAL%'; $b=[IO.File]::ReadAllBytes($p); $pe=[BitConverter]::ToInt32($b,0x3C); $b[$pe+0x5C]=2; [IO.File]::WriteAllBytes($p,$b); Write-Host 'Subsistema corrigido: GUI (sem janela CMD)'"
         echo.
         echo === Executavel unico gerado ===
         echo %DEST%\SIGEP_S1210_Extrator_v%VERSAO%.exe

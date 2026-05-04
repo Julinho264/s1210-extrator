@@ -483,7 +483,34 @@ public class S1210Extrator extends JFrame {
         }).start();
     }
 
+    // ── Roteador de plataforma ────────────────────────────────────────────────
+    private static final String OS = System.getProperty("os.name", "").toLowerCase();
+
     private String dialogoPastaNativo() {
+        if (OS.contains("win"))  return dialogoPastaWindows();
+        if (OS.contains("mac"))  return dialogoComInvoke(this::dialogoPastaMac);
+        return dialogoComInvoke(this::dialogoPastaSwing);
+    }
+
+    private String dialogoSalvarNativo() {
+        if (OS.contains("win"))  return dialogoSalvarWindows();
+        if (OS.contains("mac"))  return dialogoComInvoke(this::dialogoSalvarMac);
+        return dialogoComInvoke(this::dialogoSalvarSwing);
+    }
+
+    /** Executa um diálogo Swing no EDT a partir de uma thread de fundo. */
+    private String dialogoComInvoke(java.util.concurrent.Callable<String> fn) {
+        String[] result = {null};
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                try { result[0] = fn.call(); } catch (Exception ignored) {}
+            });
+        } catch (Exception ignored) {}
+        return result[0];
+    }
+
+    // ── Windows: PowerShell nativo (Explorer moderno, UTF-8 correto) ─────────
+    private String dialogoPastaWindows() {
         try {
             String script =
                 "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
@@ -504,7 +531,7 @@ public class S1210Extrator extends JFrame {
         } catch (Exception ex) { return null; }
     }
 
-    private String dialogoSalvarNativo() {
+    private String dialogoSalvarWindows() {
         try {
             String script =
                 "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
@@ -521,6 +548,58 @@ public class S1210Extrator extends JFrame {
             proc.waitFor();
             return out.isBlank() ? null : out;
         } catch (Exception ex) { return null; }
+    }
+
+    // ── macOS: java.awt.FileDialog (integrado ao Finder) ─────────────────────
+    private String dialogoPastaMac() {
+        System.setProperty("apple.awt.fileDialogForDirectories", "true");
+        try {
+            java.awt.FileDialog fd = new java.awt.FileDialog(
+                (java.awt.Frame) SwingUtilities.getWindowAncestor(this),
+                "Selecionar pasta com arquivos XML / ZIP do eSocial",
+                java.awt.FileDialog.LOAD);
+            fd.setVisible(true);
+            String dir  = fd.getDirectory();
+            String file = fd.getFile();
+            if (dir == null || file == null) return null;
+            return new File(dir, file).getAbsolutePath();
+        } finally {
+            System.setProperty("apple.awt.fileDialogForDirectories", "false");
+        }
+    }
+
+    private String dialogoSalvarMac() {
+        java.awt.FileDialog fd = new java.awt.FileDialog(
+            (java.awt.Frame) SwingUtilities.getWindowAncestor(this),
+            "Salvar planilha como...",
+            java.awt.FileDialog.SAVE);
+        fd.setFile("s1210_resultado.xlsx");
+        fd.setVisible(true);
+        String dir  = fd.getDirectory();
+        String file = fd.getFile();
+        if (dir == null || file == null) return null;
+        String path = new File(dir, file).getAbsolutePath();
+        return path.endsWith(".xlsx") ? path : path + ".xlsx";
+    }
+
+    // ── Linux / fallback: JFileChooser ───────────────────────────────────────
+    private String dialogoPastaSwing() {
+        JFileChooser fc = new JFileChooser();
+        fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        fc.setDialogTitle("Selecionar pasta com arquivos XML / ZIP do eSocial");
+        return fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION
+            ? fc.getSelectedFile().getAbsolutePath() : null;
+    }
+
+    private String dialogoSalvarSwing() {
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("s1210_resultado.xlsx"));
+        fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+            "Planilha Excel (*.xlsx)", "xlsx"));
+        fc.setDialogTitle("Salvar planilha como...");
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return null;
+        String path = fc.getSelectedFile().getAbsolutePath();
+        return path.endsWith(".xlsx") ? path : path + ".xlsx";
     }
 
     // ── Início do processamento (thread separada) ─────────────────────────────
@@ -577,7 +656,7 @@ public class S1210Extrator extends JFrame {
     }
 
     // =========================================================================
-    // Processamento principal
+    // Processamento principal — streaming (sem acumular bytes em memória)
     // =========================================================================
     private void processar(String pastaCaminho, String saidaCaminho) throws Exception {
 
@@ -597,88 +676,89 @@ public class S1210Extrator extends JFrame {
             .filter(p -> p.toString().toLowerCase().endsWith(".zip"))
             .collect(Collectors.toList());
 
-        // ── Mapa nome→bytes (chave em maiúsculas para deduplicação) ──────────
-        // Arquivos diretos têm prioridade; XMLs de ZIP são ignorados se o nome
-        // já estiver presente como arquivo direto.
-        Map<String, byte[]> fontes = new LinkedHashMap<>();
-
+        // Nomes dos XMLs diretos — apenas strings para deduplicação (sem bytes)
+        Set<String> nomesVistos = new LinkedHashSet<>();
         for (Path xml : xmlDiretos) {
-            fontes.put(xml.getFileName().toString().toUpperCase(), Files.readAllBytes(xml));
+            nomesVistos.add(xml.getFileName().toString().toUpperCase());
         }
 
-        int xmlsDeZip = 0;
+        // Pré-conta XMLs únicos em ZIPs (para barra de progresso)
+        int totalZipXmls = 0;
+        for (Path zip : zips) {
+            try (ZipFile zf = new ZipFile(zip.toFile())) {
+                Enumeration<? extends ZipEntry> ents = zf.entries();
+                while (ents.hasMoreElements()) {
+                    ZipEntry e = ents.nextElement();
+                    if (!e.isDirectory()) {
+                        String n = Paths.get(e.getName()).getFileName().toString().toUpperCase();
+                        if (n.endsWith(".XML") && !nomesVistos.contains(n)) totalZipXmls++;
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        int total  = xmlDiretos.size() + totalZipXmls;
+        int[]  cnt   = {0};  // arquivos processados
+        int[]  s1210 = {0};  // S-1210 encontrados
+        int    xmlsDeZip = 0;
+
+        Map<String, Registro> mapa = new LinkedHashMap<>();
+
+        // DocumentBuilder reutilizado — não acumula DOM entre arquivos
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        dbf.setNamespaceAware(false);
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        db.setErrorHandler(null);
+
+        // ── XMLs diretos: lê e processa um por vez (bytes liberados pelo GC logo após) ──
+        for (Path xml : xmlDiretos) {
+            cnt[0]++;
+            atualizarProgresso(cnt[0], total);
+            String nome = xml.getFileName().toString().toUpperCase();
+            try (InputStream is = Files.newInputStream(xml)) {
+                List<Registro> regs = parsearStream(nome, is, db);
+                if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
+            } catch (Exception ex) {
+                log("⚠  " + nome + ": " + ex.getMessage());
+            }
+        }
+
+        // ── ZIPs: cada entrada processada e descartada — sem guardar bytes ────
         for (Path zip : zips) {
             log("📦  Abrindo: " + zip.getFileName());
-            int novosNesteZip = 0, duplicadosNesteZip = 0;
+            int novos = 0, duplic = 0;
             try (ZipFile zf = new ZipFile(zip.toFile())) {
-                Enumeration<? extends ZipEntry> entries = zf.entries();
-                while (entries.hasMoreElements()) {
-                    ZipEntry entry = entries.nextElement();
+                Enumeration<? extends ZipEntry> ents = zf.entries();
+                while (ents.hasMoreElements()) {
+                    ZipEntry entry = ents.nextElement();
                     if (!entry.isDirectory()) {
-                        String nome = Paths.get(entry.getName()).getFileName().toString();
-                        if (nome.toLowerCase().endsWith(".xml")) {
-                            if (!fontes.containsKey(nome.toUpperCase())) {
+                        String nome = Paths.get(entry.getName()).getFileName().toString().toUpperCase();
+                        if (nome.endsWith(".XML")) {
+                            if (!nomesVistos.contains(nome)) {
+                                nomesVistos.add(nome);
+                                cnt[0]++;
+                                atualizarProgresso(cnt[0], total);
                                 try (InputStream is = zf.getInputStream(entry)) {
-                                    fontes.put(nome.toUpperCase(), is.readAllBytes());
-                                    novosNesteZip++;
-                                    xmlsDeZip++;
+                                    List<Registro> regs = parsearStream(nome, is, db);
+                                    if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
+                                } catch (Exception ex) {
+                                    log("⚠  " + nome + ": " + ex.getMessage());
                                 }
+                                novos++; xmlsDeZip++;
                             } else {
-                                duplicadosNesteZip++;
+                                duplic++;
                             }
                         }
                     }
                 }
-                log("    └─ " + novosNesteZip + " XML(s) adicionado(s)"
-                    + (duplicadosNesteZip > 0 ? ", " + duplicadosNesteZip + " duplicado(s) ignorado(s)" : ""));
+                log("    └─ " + novos + " XML(s) adicionado(s)"
+                    + (duplic > 0 ? ", " + duplic + " duplicado(s) ignorado(s)" : ""));
             } catch (Exception ex) {
                 log("⚠  ZIP " + zip.getFileName() + ": " + ex.getMessage());
             }
         }
 
-        log("Total a processar: " + fontes.size() + " XML(s) únicos");
-
-        Map<String, Registro> mapa = new LinkedHashMap<>();
-        int total = fontes.size();
-        int contador = 0, s1210Encontrados = 0;
-
-        for (Map.Entry<String, byte[]> fonte : fontes.entrySet()) {
-            contador++;
-            final int pct = (int)(contador * 100.0 / total);
-            SwingUtilities.invokeLater(() -> {
-                progressBar.setValue(pct);
-                progressBar.setString(pct + "%");
-            });
-
-            String nomeExibicao = fonte.getKey();
-            try {
-                List<Registro> registros = parsearArquivo(nomeExibicao, fonte.getValue());
-                if (!registros.isEmpty()) {
-                    s1210Encontrados++;
-                    for (Registro r : registros) {
-                        String recibo = (r.nrRecibo != null && !r.nrRecibo.isBlank()) ? r.nrRecibo : "";
-                        String chave  = r.cpf + "|" + r.perApur + "|" + recibo;
-                        Registro ex = mapa.get(chave);
-                        if (ex == null) {
-                            mapa.put(chave, r);
-                        } else {
-                            log("⚠  Fusão de linha — CPF " + r.cpf
-                                + " | perApur " + r.perApur
-                                + " | nrRecibo " + (r.nrRecibo != null ? r.nrRecibo : "(vazio)")
-                                + " — arquivo: " + nomeExibicao);
-                            r.idmDevs.forEach(ex::adicionarDmDev);
-                            r.perRefs.forEach(ex::adicionarPerRef);
-                        }
-                    }
-                    long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
-                    log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
-                }
-            } catch (Exception ex) {
-                log("⚠  " + nomeExibicao + ": " + ex.getMessage());
-            }
-        }
-
-        // Filtro de divergências (aplica antes de contar as linhas finais)
+        // Filtro de divergências
         boolean filtrarDiverg = chkDivergencias.isSelected();
         if (filtrarDiverg) {
             mapa.entrySet().removeIf(e -> !isDivergencia(e.getValue()));
@@ -688,11 +768,11 @@ public class S1210Extrator extends JFrame {
         log("XMLs diretos       : " + xmlDiretos.size());
         log("ZIPs encontrados   : " + zips.size());
         log("XMLs extraídos ZIP : " + xmlsDeZip);
-        log("S-1210 encontrados : " + s1210Encontrados);
+        log("S-1210 encontrados : " + s1210[0]);
         if (filtrarDiverg) log("Modo               : apenas divergências");
         log("Linhas na planilha : " + mapa.size());
 
-        if (s1210Encontrados == 0) {
+        if (s1210[0] == 0) {
             SwingUtilities.invokeLater(() -> {
                 progressBar.setValue(0);
                 progressBar.setString("Nenhum S-1210");
@@ -719,39 +799,70 @@ public class S1210Extrator extends JFrame {
         SwingUtilities.invokeLater(() -> {
             progressBar.setValue(100);
             progressBar.setString("Concluído!");
-
             int resp = dlgConfirmar("Concluído",
                 "Planilha gerada com sucesso!\n\n" + saidaCaminho +
                 "\n\nDeseja abrir o arquivo agora?");
-
             if (resp == JOptionPane.YES_OPTION) {
-                try {
-                    Desktop.getDesktop().open(new File(saidaCaminho));
-                } catch (Exception ex) {
-                    dlgErro("Erro", "Não foi possível abrir o arquivo:\n" + ex.getMessage());
-                }
+                try { Desktop.getDesktop().open(new File(saidaCaminho)); }
+                catch (Exception ex) { dlgErro("Erro", "Não foi possível abrir o arquivo:\n" + ex.getMessage()); }
             }
         });
     }
 
-    // =========================================================================
-    // Parse de um arquivo XML (nome em maiúsculas, bytes já lidos)
-    // =========================================================================
-    private List<Registro> parsearArquivo(String nomeUpper, byte[] bytes) throws Exception {
-        boolean ehS1210porNome = nomeUpper.contains(".S-1210.");
+    /** Atualiza a barra de progresso de forma thread-safe. */
+    private void atualizarProgresso(int atual, int total) {
+        int pct = total > 0 ? (int)(atual * 100.0 / total) : 0;
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setValue(pct);
+            progressBar.setString(pct + "%");
+        });
+    }
 
-        if (!ehS1210porNome) {
-            String trecho = new String(bytes, 0, Math.min(bytes.length, 4096), "UTF-8");
-            if (!trecho.contains("evtPgtos") && !trecho.contains("infoPgto")) {
-                return Collections.emptyList();
+    /** Funde uma lista de Registros no mapa global, logando fusões. */
+    private void fundirNoMapa(List<Registro> registros, Map<String, Registro> mapa, String nomeExibicao) {
+        long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
+        log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
+        for (Registro r : registros) {
+            String recibo = (r.nrRecibo != null && !r.nrRecibo.isBlank()) ? r.nrRecibo : "";
+            String chave  = r.cpf + "|" + r.perApur + "|" + recibo;
+            Registro ex   = mapa.get(chave);
+            if (ex == null) {
+                mapa.put(chave, r);
+            } else {
+                log("⚠  Fusão de linha — CPF " + r.cpf
+                    + " | perApur " + r.perApur
+                    + " | nrRecibo " + (r.nrRecibo != null ? r.nrRecibo : "(vazio)")
+                    + " — arquivo: " + nomeExibicao);
+                r.idmDevs.forEach(ex::adicionarDmDev);
+                r.perRefs.forEach(ex::adicionarPerRef);
             }
         }
+    }
 
-        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-        dbf.setNamespaceAware(false);
-        DocumentBuilder db = dbf.newDocumentBuilder();
-        db.setErrorHandler(null);
-        Document doc = db.parse(new java.io.ByteArrayInputStream(bytes));
+    // =========================================================================
+    // Parse de um arquivo XML a partir de InputStream (sem carregar bytes inteiros)
+    // =========================================================================
+    private List<Registro> parsearStream(String nomeUpper, InputStream rawIs,
+                                         DocumentBuilder db) throws Exception {
+        boolean ehS1210porNome = nomeUpper.contains(".S-1210.");
+
+        // BufferedInputStream com buffer de 64 KB; mark/reset para detectar tipo sem reler
+        java.io.BufferedInputStream bis = new java.io.BufferedInputStream(rawIs, 65536);
+
+        if (!ehS1210porNome) {
+            bis.mark(4096);
+            byte[] trecho = new byte[4096];
+            int lidos = bis.read(trecho);
+            if (lidos > 0) {
+                String s = new String(trecho, 0, lidos, java.nio.charset.StandardCharsets.UTF_8);
+                if (!s.contains("evtPgtos") && !s.contains("infoPgto")) {
+                    return Collections.emptyList();
+                }
+            }
+            bis.reset();
+        }
+
+        Document doc = db.parse(bis);
         doc.getDocumentElement().normalize();
 
         String perApur = primeiroTexto(doc, "perApur");
