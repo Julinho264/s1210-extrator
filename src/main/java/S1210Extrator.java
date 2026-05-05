@@ -81,6 +81,11 @@ public class S1210Extrator extends JFrame {
     private JLabel      lblStatus;
     private JCheckBox   chkDivergencias;
 
+    // ── Buffer de log — evita inundar a EDT com invokeLater por arquivo ───────
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> logBuffer =
+        new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private int ultimoPctBar = -1; // controla atualização da barra de progresso
+
     // ── Versão (injetada pelo Maven via app.properties) ───────────────────────
     static final String VERSAO = lerVersao();
 
@@ -717,19 +722,25 @@ public class S1210Extrator extends JFrame {
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
 
-        // Factory compartilhada; DocumentBuilder criado por arquivo (Xerces não é seguro para reuso após exceção)
         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
         dbf.setNamespaceAware(false);
+        // DocumentBuilder reutilizado — criado novo apenas após exceção de parse
+        DocumentBuilder[] dbHolder = { dbf.newDocumentBuilder() };
+        dbHolder[0].setErrorHandler(null);
 
         // ── XMLs diretos: lê e processa um por vez (bytes liberados pelo GC logo após) ──
         for (Path xml : xmlDiretos) {
             cnt[0]++;
             atualizarProgresso(cnt[0], total);
+            if (cnt[0] % 50 == 0) flushLog(); // flush periódico: 1 invokeLater a cada 50 arquivos
             String nome = xml.getFileName().toString().toUpperCase();
             try (InputStream is = Files.newInputStream(xml)) {
-                List<Registro> regs = parsearStream(nome, is, dbf);
+                List<Registro> regs = parsearStream(nome, is, dbHolder[0]);
                 if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
             } catch (Throwable ex) {
+                // Recria o DocumentBuilder para garantir estado limpo após falha
+                try { dbHolder[0] = dbf.newDocumentBuilder(); dbHolder[0].setErrorHandler(null); }
+                catch (Exception ignored) {}
                 log("⚠  " + nome + ": " + ex.getClass().getSimpleName() + " — " + ex.getMessage());
             }
         }
@@ -749,10 +760,13 @@ public class S1210Extrator extends JFrame {
                                 nomesVistos.add(nome);
                                 cnt[0]++;
                                 atualizarProgresso(cnt[0], total);
+                                if (cnt[0] % 50 == 0) flushLog();
                                 try (InputStream is = zf.getInputStream(entry)) {
-                                    List<Registro> regs = parsearStream(nome, is, dbf);
+                                    List<Registro> regs = parsearStream(nome, is, dbHolder[0]);
                                     if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
                                 } catch (Throwable ex) {
+                                    try { dbHolder[0] = dbf.newDocumentBuilder(); dbHolder[0].setErrorHandler(null); }
+                                    catch (Exception ignored) {}
                                     log("⚠  " + nome + ": " + ex.getClass().getSimpleName() + " — " + ex.getMessage());
                                 }
                                 novos++; xmlsDeZip++;
@@ -782,8 +796,10 @@ public class S1210Extrator extends JFrame {
         log("S-1210 encontrados : " + s1210[0]);
         if (filtrarDiverg) log("Modo               : apenas divergências");
         log("Linhas na planilha : " + mapa.size());
+        flushLog(); // garante que todo o log chega à UI antes dos diálogos
 
         if (s1210[0] == 0) {
+            flushLog();
             SwingUtilities.invokeLater(() -> {
                 progressBar.setValue(0);
                 progressBar.setString("Nenhum S-1210");
@@ -795,6 +811,7 @@ public class S1210Extrator extends JFrame {
         }
 
         if (filtrarDiverg && mapa.isEmpty()) {
+            flushLog();
             SwingUtilities.invokeLater(() -> {
                 progressBar.setValue(0);
                 progressBar.setString("Sem divergências");
@@ -820,9 +837,11 @@ public class S1210Extrator extends JFrame {
         });
     }
 
-    /** Atualiza a barra de progresso de forma thread-safe. */
+    /** Atualiza a barra de progresso apenas quando o percentual muda. */
     private void atualizarProgresso(int atual, int total) {
         int pct = total > 0 ? (int)(atual * 100.0 / total) : 0;
+        if (pct == ultimoPctBar) return;
+        ultimoPctBar = pct;
         SwingUtilities.invokeLater(() -> {
             progressBar.setValue(pct);
             progressBar.setString(pct + "%");
@@ -878,7 +897,7 @@ public class S1210Extrator extends JFrame {
     // Parse de um arquivo XML a partir de InputStream (sem carregar bytes inteiros)
     // =========================================================================
     private List<Registro> parsearStream(String nomeUpper, InputStream rawIs,
-                                         DocumentBuilderFactory dbf) throws Exception {
+                                         DocumentBuilder dbf) throws Exception {
         boolean ehS1210porNome = nomeUpper.contains(".S-1210.");
 
         // BufferedInputStream com buffer de 64 KB; mark/reset para detectar tipo sem reler
@@ -897,10 +916,7 @@ public class S1210Extrator extends JFrame {
             bis.reset();
         }
 
-        // Novo DocumentBuilder por arquivo — garante estado limpo mesmo após XML malformado anterior
-        DocumentBuilder db = dbf.newDocumentBuilder();
-        db.setErrorHandler(null);
-        Document doc = db.parse(bis);
+        Document doc = dbf.parse(bis); // dbf aqui já é o DocumentBuilder reutilizável
         doc.getDocumentElement().normalize();
 
         String perApur = primeiroTexto(doc, "perApur");
@@ -1051,9 +1067,23 @@ public class S1210Extrator extends JFrame {
         return null;
     }
 
+    /** Enfileira uma linha de log — sem tocar na EDT imediatamente. */
     private void log(String msg) {
+        logBuffer.add(msg);
+    }
+
+    /**
+     * Drena o buffer de log para o JTextArea em um único invokeLater.
+     * Chamar periodicamente durante o processamento (ex: a cada N arquivos).
+     */
+    private void flushLog() {
+        if (logBuffer.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        String linha;
+        while ((linha = logBuffer.poll()) != null) sb.append(linha).append('\n');
+        final String bloco = sb.toString();
         SwingUtilities.invokeLater(() -> {
-            txtLog.append(msg + "\n");
+            txtLog.append(bloco);
             txtLog.setCaretPosition(txtLog.getDocument().getLength());
         });
     }
