@@ -76,6 +76,7 @@ public class S1210Extrator extends JFrame {
     private JButton     btnSelecionarPasta;
     private JButton     btnSelecionarSaida;
     private JButton     btnGerar;
+    private JButton     btnCancelar;
     private JTextArea   txtLog;
     private JProgressBar progressBar;
     private JLabel      lblStatus;
@@ -85,6 +86,9 @@ public class S1210Extrator extends JFrame {
     private final java.util.concurrent.ConcurrentLinkedQueue<String> logBuffer =
         new java.util.concurrent.ConcurrentLinkedQueue<>();
     private int ultimoPctBar = -1; // controla atualização da barra de progresso
+
+    // ── Cancelamento do processamento ─────────────────────────────────────────
+    private volatile boolean cancelado = false;
 
     // ── Versão (injetada pelo Maven via app.properties) ───────────────────────
     static final String VERSAO = lerVersao();
@@ -287,10 +291,23 @@ public class S1210Extrator extends JFrame {
         btnGerar = makePrimaryButton("  Gerar Planilha  ");
         btnGerar.addActionListener(e -> iniciarGeracao());
 
+        btnCancelar = makeSecondaryButton("  Cancelar  ");
+        btnCancelar.setVisible(false);
+        btnCancelar.addActionListener(e -> {
+            cancelado = true;
+            btnCancelar.setEnabled(false);
+            btnCancelar.setText("  Cancelando...  ");
+        });
+
+        JPanel btns = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 6, 0));
+        btns.setOpaque(false);
+        btns.add(btnCancelar);
+        btns.add(btnGerar);
+
         JPanel actionRow = new JPanel(new BorderLayout(10, 0));
         actionRow.setOpaque(false);
         actionRow.add(progressBar, BorderLayout.CENTER);
-        actionRow.add(btnGerar,    BorderLayout.EAST);
+        actionRow.add(btns,        BorderLayout.EAST);
 
         lblStatus = new JLabel("© SIGEP — Sistema Integrado de Gestão Pública  |  v" + VERSAO);
         lblStatus.setFont(FIGTREE_REGULAR.deriveFont(10f));
@@ -617,24 +634,39 @@ public class S1210Extrator extends JFrame {
             return;
         }
 
+        cancelado = false;
+        ultimoPctBar = -1;
         btnGerar.setEnabled(false);
+        btnCancelar.setVisible(true);
+        btnCancelar.setEnabled(true);
+        btnCancelar.setText("  Cancelar  ");
         txtLog.setText("");
         progressBar.setValue(0);
-        progressBar.setString("Processando...");
+        progressBar.setString("Aguardando...");
 
         new Thread(() -> {
             try {
                 processar(pasta, saida);
             } catch (Throwable ex) {
-                // Captura também OutOfMemoryError / StackOverflowError
-                String msg = ex.getClass().getSimpleName() + ": " + ex.getMessage();
-                log("ERRO FATAL: " + msg);
-                gravarLogErro(ex);
-                SwingUtilities.invokeLater(() ->
-                    dlgErro("Erro", "Erro durante o processamento:\n" + msg +
-                        "\n\nDetalhes gravados em s1210_erro.log"));
+                if (!cancelado) {
+                    String msg = ex.getClass().getSimpleName() + ": " + ex.getMessage();
+                    log("ERRO FATAL: " + msg);
+                    flushLog();
+                    gravarLogErro(ex);
+                    SwingUtilities.invokeLater(() ->
+                        dlgErro("Erro", "Erro durante o processamento:\n" + msg +
+                            "\n\nDetalhes gravados em s1210_erro.log"));
+                }
             } finally {
-                SwingUtilities.invokeLater(() -> btnGerar.setEnabled(true));
+                SwingUtilities.invokeLater(() -> {
+                    btnGerar.setEnabled(true);
+                    btnCancelar.setVisible(false);
+                    progressBar.setIndeterminate(false);
+                    if (cancelado) {
+                        progressBar.setValue(0);
+                        progressBar.setString("Cancelado");
+                    }
+                });
             }
         }).start();
     }
@@ -730,17 +762,21 @@ public class S1210Extrator extends JFrame {
         DocumentBuilder[] dbHolder = { dbf.newDocumentBuilder() };
         dbHolder[0].setErrorHandler(null);
 
-        // ── XMLs diretos: lê e processa um por vez (bytes liberados pelo GC logo após) ──
+        // ── XMLs diretos: lê e processa um por vez ───────────────────────────
         for (Path xml : xmlDiretos) {
+            if (cancelado) { log("⛔ Cancelado pelo usuário."); flushLog(); return; }
             cnt[0]++;
             atualizarProgresso(cnt[0], total[0]);
-            if (cnt[0] % 50 == 0) flushLog(); // flush periódico: 1 invokeLater a cada 50 arquivos
+            // Flush e log de progresso a cada 200 arquivos (mantém UI responsiva)
+            if (cnt[0] % 200 == 0) {
+                log("⏳ " + cnt[0] + "/" + total[0] + " arquivos — S-1210: " + s1210[0]);
+                flushLog();
+            }
             String nome = xml.getFileName().toString().toUpperCase();
             try (InputStream is = Files.newInputStream(xml)) {
                 List<Registro> regs = parsearStream(nome, is, dbHolder[0]);
                 if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
             } catch (Throwable ex) {
-                // Recria o DocumentBuilder para garantir estado limpo após falha
                 try { dbHolder[0] = dbf.newDocumentBuilder(); dbHolder[0].setErrorHandler(null); }
                 catch (Exception ignored) {}
                 log("⚠  " + nome + ": " + ex.getClass().getSimpleName() + " — " + ex.getMessage());
@@ -749,21 +785,27 @@ public class S1210Extrator extends JFrame {
 
         // ── ZIPs: cada entrada processada e descartada — sem guardar bytes ────
         for (Path zip : zips) {
+            if (cancelado) { log("⛔ Cancelado pelo usuário."); flushLog(); return; }
             log("📦  Abrindo: " + zip.getFileName());
+            flushLog();
             int novos = 0, duplic = 0;
             try (ZipFile zf = new ZipFile(zip.toFile())) {
                 Enumeration<? extends ZipEntry> ents = zf.entries();
                 while (ents.hasMoreElements()) {
+                    if (cancelado) break;
                     ZipEntry entry = ents.nextElement();
                     if (!entry.isDirectory()) {
                         String nome = Paths.get(entry.getName()).getFileName().toString().toUpperCase();
                         if (nome.endsWith(".XML")) {
                             if (!nomesVistos.contains(nome)) {
                                 nomesVistos.add(nome);
-                                total[0]++; // descobre novos XMLs conforme abre ZIPs
+                                total[0]++;
                                 cnt[0]++;
                                 atualizarProgresso(cnt[0], total[0]);
-                                if (cnt[0] % 50 == 0) flushLog();
+                                if (cnt[0] % 200 == 0) {
+                                    log("⏳ " + cnt[0] + "/" + total[0] + " arquivos — S-1210: " + s1210[0]);
+                                    flushLog();
+                                }
                                 try (InputStream is = zf.getInputStream(entry)) {
                                     List<Registro> regs = parsearStream(nome, is, dbHolder[0]);
                                     if (!regs.isEmpty()) { s1210[0]++; fundirNoMapa(regs, mapa, nome); }
@@ -784,7 +826,9 @@ public class S1210Extrator extends JFrame {
             } catch (Exception ex) {
                 log("⚠  ZIP " + zip.getFileName() + ": " + ex.getMessage());
             }
+            flushLog();
         }
+        if (cancelado) { log("⛔ Cancelado pelo usuário."); flushLog(); return; }
 
         // Filtro de divergências
         boolean filtrarDiverg = chkDivergencias.isSelected();
@@ -859,8 +903,6 @@ public class S1210Extrator extends JFrame {
      * na coluna "Arquivo Origem" para rastreabilidade.
      */
     private void fundirNoMapa(List<Registro> registros, Map<String, Registro> mapa, String nomeExibicao) {
-        long nBenef = registros.stream().map(r -> r.cpf).distinct().count();
-        log("✔  " + nomeExibicao + " — " + nBenef + " beneficiário(s)");
         for (Registro r : registros) {
             r.adicionarOrigem(nomeExibicao);
             String chave = r.cpf + "|" + r.perApur;
