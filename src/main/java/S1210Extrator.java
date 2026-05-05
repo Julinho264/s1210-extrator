@@ -678,6 +678,12 @@ public class S1210Extrator extends JFrame {
     // =========================================================================
     private void processar(String pastaCaminho, String saidaCaminho) throws Exception {
 
+        // Feedback imediato — barra indeterminada enquanto varre a pasta
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setIndeterminate(true);
+            progressBar.setString("Analisando pasta...");
+        });
+
         // ── Coleta arquivos da pasta ──────────────────────────────────────────
         List<Path> todosArquivos;
         try (var stream = Files.walk(Paths.get(pastaCaminho))) {
@@ -700,25 +706,21 @@ public class S1210Extrator extends JFrame {
             nomesVistos.add(xml.getFileName().toString().toUpperCase());
         }
 
-        // Pré-conta XMLs únicos em ZIPs (para barra de progresso)
-        int totalZipXmls = 0;
-        for (Path zip : zips) {
-            try (ZipFile zf = new ZipFile(zip.toFile())) {
-                Enumeration<? extends ZipEntry> ents = zf.entries();
-                while (ents.hasMoreElements()) {
-                    ZipEntry e = ents.nextElement();
-                    if (!e.isDirectory()) {
-                        String n = Paths.get(e.getName()).getFileName().toString().toUpperCase();
-                        if (n.endsWith(".XML") && !nomesVistos.contains(n)) totalZipXmls++;
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+        // Total inicial = XMLs diretos; cresce conforme ZIPs são lidos (sem pré-varredura)
+        int[] total = { xmlDiretos.size() };
+        int[] cnt   = {0};  // arquivos processados
+        int[] s1210 = {0};  // S-1210 encontrados
+        int   xmlsDeZip = 0;
 
-        int total  = xmlDiretos.size() + totalZipXmls;
-        int[]  cnt   = {0};  // arquivos processados
-        int[]  s1210 = {0};  // S-1210 encontrados
-        int    xmlsDeZip = 0;
+        log("Encontrados: " + xmlDiretos.size() + " XML(s) + " + zips.size() + " ZIP(s)");
+        flushLog();
+
+        // Volta para barra determinada agora que temos a contagem
+        SwingUtilities.invokeLater(() -> {
+            progressBar.setIndeterminate(false);
+            progressBar.setValue(0);
+            progressBar.setString("0%");
+        });
 
         Map<String, Registro> mapa = new LinkedHashMap<>();
 
@@ -731,7 +733,7 @@ public class S1210Extrator extends JFrame {
         // ── XMLs diretos: lê e processa um por vez (bytes liberados pelo GC logo após) ──
         for (Path xml : xmlDiretos) {
             cnt[0]++;
-            atualizarProgresso(cnt[0], total);
+            atualizarProgresso(cnt[0], total[0]);
             if (cnt[0] % 50 == 0) flushLog(); // flush periódico: 1 invokeLater a cada 50 arquivos
             String nome = xml.getFileName().toString().toUpperCase();
             try (InputStream is = Files.newInputStream(xml)) {
@@ -758,8 +760,9 @@ public class S1210Extrator extends JFrame {
                         if (nome.endsWith(".XML")) {
                             if (!nomesVistos.contains(nome)) {
                                 nomesVistos.add(nome);
+                                total[0]++; // descobre novos XMLs conforme abre ZIPs
                                 cnt[0]++;
-                                atualizarProgresso(cnt[0], total);
+                                atualizarProgresso(cnt[0], total[0]);
                                 if (cnt[0] % 50 == 0) flushLog();
                                 try (InputStream is = zf.getInputStream(entry)) {
                                     List<Registro> regs = parsearStream(nome, is, dbHolder[0]);
